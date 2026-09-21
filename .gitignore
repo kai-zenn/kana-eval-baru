@@ -1,0 +1,80 @@
+# ============================================
+# KANA-EVAL — .gitignore
+# ============================================
+
+# ---- Credentials & Secrets (WAJIB JANGAN DI-PUSH) ----
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+
+# ---- Python Cache ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ---- Virtual Environment ----
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# ---- IDE & Editor ----
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---- Test & Coverage ----
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+*.cover
+
+# ---- Output Evaluasi (Regenerable — jangan di-push) ----
+results.csv
+results.md
+results_detailed.csv
+results_*.csv
+results_*.md
+
+# ---- Script Eksperimen Pribadi (jangan di-push) ----
+# test_match_minimal.py
+# test_threshold.py
+# merge_products.py
+# demo.py
+# scratch_*.py
+
+# ---- Log & Temp ----
+*.log
+*.tmp
+*.bak
+tmp/
+temp/

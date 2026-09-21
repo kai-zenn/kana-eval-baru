@@ -1,0 +1,180 @@
+# KANA - Uji Performa Head-to-Head Matching
+
+Membandingkan 3 pendekatan matching untuk posting **#CariMaterial** di platform KANA:
+
+| # | Pendekatan | Teknologi |
+|---|---|---|
+| 1 | Keyword (Baseline) | SQL `ILIKE` sederhana |
+| 2 | BM25 / Full-text (Baseline) | PostgreSQL `to_tsquery` + `ts_rank` |
+| 3 | NLP Pipeline (Solusi kami) | BM25 Stage 2 -> Semantic similarity Stage 3, lewat NLP service |
+
+Dibuat untuk persiapan **Samsung Solve for Tomorrow 2026**, supaya klaim "pipeline NLP kami lebih unggul" punya data empiris di baliknya (atau, kalau ternyata tidak unggul, tetap ada data jujur untuk di-framing apa adanya).
+
+---
+
+## 1. Struktur Folder
+
+```
+kana-eval/
+├── mock_nlp_service.py     # Replika kontrak API NLP service (FastAPI, port 8001)
+├── evaluate_matching.py    # Skrip evaluasi utama (jalankan ini)
+├── config.py               # Konfigurasi terpusat (baca .env, ada komentar TODO)
+├── .env.example            # Template .env -- salin & isi
+├── migrations.sql          # DDL: tabel products & material_requests
+├── seed_products.json      # 60 listing produk (data uji)
+├── seed_queries.json       # 27 query #CariMaterial + ground truth
+├── requirements.txt        # Dependency Python
+├── test_metrics.py         # Unit test untuk metrik tambahan (revisi)
+├── _generate_seed_data.py  # (bonus, opsional) skrip pembuat seed data di atas
+└── README.md               # File ini
+```
+
+`_generate_seed_data.py` BUKAN bagian dari alur evaluasi (tidak dipanggil oleh `evaluate_matching.py`) -- ini hanya disertakan untuk transparansi, kalau kamu ingin melihat bagaimana `relevant_listing_ids` (ground truth) di `seed_queries.json` dihitung, atau ingin membuat ulang/memperluas data dengan seed acak yang sama (`random.seed(42)`, deterministik).
+
+---
+
+## 2. Cara Menjalankan
+
+### Langkah 1 -- Install dependency
+
+```bash
+pip install -r requirements.txt
+```
+
+### Langkah 2 -- Isi konfigurasi
+
+```bash
+cp .env.example .env
+```
+
+Lalu buka `.env` dan isi bagian yang ditandai `# TODO: ISI INI`:
+- `DATABASE_URL` -- connection string database cloud kamu (Neon/Supabase/Aiven/dll)
+- `NLP_SERVICE_API_KEY` -- shared secret bebas kamu tentukan (harus sama antara mock service, eval script, dan nanti backend Go)
+
+Default lain (`NLP_BASE_URL`, `NLP_MODE`, dst) sudah diarahkan ke mock service lokal dan aman dipakai langsung.
+
+### Langkah 3 -- Jalankan migrasi database
+
+```bash
+psql "$DATABASE_URL" -f migrations.sql
+```
+
+(Ganti `$DATABASE_URL` dengan connection string kamu kalau tidak di-export sebagai env var, atau paste langsung connection string-nya.)
+
+### Langkah 4 -- Jalankan NLP service
+
+**Mode A (default, mock -- dipakai kalau NLP service asli rekan tim belum siap):**
+
+```bash
+uvicorn mock_nlp_service:app --port 8001
+```
+
+**Mode B (NLP service asli sudah siap):** cukup ubah dua baris di `.env`:
+
+```
+NLP_BASE_URL=http://alamat-nlp-service-asli:PORT
+NLP_MODE=real
+```
+
+Tidak ada kode yang perlu diubah -- karena kontrak API mock & asli identik.
+
+### Langkah 5 -- Jalankan evaluasi
+
+```bash
+python evaluate_matching.py
+```
+
+Skrip ini otomatis: seed database (idempotent, aman dijalankan berkali-kali) -> ambil kandidat per query (Stage 1 radius filter) -> jalankan ketiga pendekatan -> hitung metrik -> tulis output.
+
+### Langkah 6 (opsional, disarankan) -- Jalankan unit test metrik
+
+```bash
+python -m unittest test_metrics.py -v
+# atau, kalau kamu sudah pakai pytest:
+pytest test_metrics.py -v
+```
+
+Test ini TIDAK butuh database atau NLP service jalan -- hanya menguji fungsi perhitungan metrik tambahan (Success@K, Coverage, MAP, P95, Diversity@3) dengan input kecil yang hasilnya dihitung manual di komentar tiap test.
+
+---
+
+## 3. Cara Membaca Hasil
+
+Tiga file dihasilkan:
+
+- **`results.md`** -- tabel ringkasan (format sama seperti draf yang kamu kirim ke mentor), plus catatan otomatis kalau kamu masih di Mode mock.
+- **`results.csv`** -- versi CSV dari tabel yang sama, untuk ditempel ke slide/spreadsheet.
+- **`results_detailed.csv`** -- satu baris per (query, pendekatan): berguna untuk audit "kenapa NLP Pipeline kalah di query tertentu" saat debugging.
+
+Baris `Metrik` yang tersedia: `Precision@3`, `Recall@3`, `nDCG@3`, `Precision@5`, `Recall@5`, `nDCG@5`, `MRR` (K bisa diubah lewat `EVAL_K_VALUES` di `.env`), lalu **metrik tambahan** `Success@3`, `Success@5`, `Coverage`, `MAP`, `Diversity@3`, dan diakhiri `Latensi rata-rata (ms)`, `P95 Latency (ms)`. Penjelasan tiap metrik tambahan ada di bagian 7.
+
+`results_detailed.csv` juga punya kolom tambahan: `success@3`, `success@5`, `coverage`, `average_precision` (dipakai untuk MAP), dan `diversity@3` (bonus, untuk audit).
+
+**PENTING soal Mode mock:** selama masih pakai `mock_nlp_service.py`, embedding yang dipakai adalah vektor pseudo-random (bukan model ML sungguhan) -- jadi angka kolom "NLP Pipeline" di Mode ini **hanya membuktikan pipeline & kontrak API berjalan dengan benar**, bukan membuktikan keunggulan semantik. Pembuktian keunggulan pipeline untuk laporan ke mentor/juri **harus** dilakukan di Mode B (NLP service asli).
+
+---
+
+## 4. Skema Database
+
+Lihat `migrations.sql` untuk DDL lengkap. Ringkasnya:
+
+- **`products`** -- kolom minimal: `id, title, description, category_branch, latitude, longitude, listing_type, status`, plus `search_vector` (auto-terisi lewat trigger, dipakai Baseline 2).
+- **`material_requests`** -- `id, raw_text, latitude, longitude, relevant_listing_ids, created_at`. Kolom `relevant_listing_ids` (`TEXT[]`) khusus untuk keperluan evaluasi/ground truth, bukan bagian skema produksi KANA yang sesungguhnya -- kalau kalian sudah punya skema `material_requests` sendiri, abaikan tabel ini; `evaluate_matching.py` membaca ground truth langsung dari `seed_queries.json`, bukan dari kolom ini.
+
+Kalau tim KANA sudah punya skema sendiri untuk kedua tabel ini, sesuaikan saja query di `evaluate_matching.py` (fungsi `get_candidates`, `baseline_keyword_search`, `baseline_fulltext_search`) ke nama kolom kalian.
+
+---
+
+## 5. Ringkasan Keputusan & Asumsi (`# ASUMSI:`)
+
+Semua keputusan yang tidak eksplisit di spesifikasi asli ditandai `# ASUMSI:` langsung di kode. Ringkasannya di sini supaya gampang di-review sekali baca:
+
+1. **Text search config `'simple'`, bukan `'indonesian'`** -- PostgreSQL tidak menyediakan configuration Bahasa Indonesia bawaan. Kalau kalian pasang dictionary custom di server, ganti `'simple'` di `migrations.sql` (trigger) dan `evaluate_matching.py` (`baseline_fulltext_search`).
+2. **Baseline 2 pakai `to_tsquery` dengan OR antar keyword signifikan, bukan `plainto_tsquery` mentah** -- `plainto_tsquery` atas kalimat penuh akan meng-AND-kan semua kata (termasuk kata basa-basi), yang membuat baseline ini nyaris tidak pernah match. OR + `ts_rank` jauh lebih dekat ke ranking berbasis term-frequency ala BM25.
+3. **Ekstraksi keyword (`extract_keywords`) sangat sederhana** -- lowercase, buang hashtag, buang daftar stopword & kata basa-basi #CariMaterial Bahasa Indonesia yang di-hardcode. Ini disengaja tetap naif karena mewakili "baseline lemah", bukan NLP proper.
+4. **Stage 1 (spatial filter) disimulasikan di Python** dengan Haversine langsung terhadap seluruh baris `products`, bukan lewat PostGIS/bounding-box index -- cukup untuk skala data uji ini (puluhan-ratusan baris).
+5. **`final_score` pada mock `/v1/match` = `semantic_score`** (mengikuti contoh di kontrak API kamu).
+6. **Fallback saat tidak ada kandidat yang lolos `semantic_threshold`** di mock service: pool diurutkan berdasarkan `bm25_score` (sinyal sungguhan), bukan `semantic_score` (yang di Mode mock murni noise acak) -- supaya mock tetap berguna untuk sanity-check pipeline walau model semantik belum ada.
+7. **Query dengan `relevant_listing_ids` kosong** (2 dari 27 query di seed data, sengaja dibuat sebagai edge case) dikecualikan dari rata-rata Recall/MRR/nDCG (bukan dihitung sebagai 0), karena metrik itu tidak terdefinisi secara matematis tanpa ground truth. Precision@K tetap dihitung penuh (0 kalau tidak ada hit).
+8. **`material_requests.id` bertipe `TEXT`, bukan `UUID`** -- supaya bisa memakai id ringkas seperti `q001` dari `seed_queries.json` yang gampang dibaca di tabel hasil.
+
+---
+
+## 6. Revisi Metrik Tambahan
+
+Revisi ini menambahkan 5 metrik baru di `evaluate_matching.py`, di luar metrik akademis standar (Precision/Recall/nDCG/MRR) yang sudah ada. Tujuannya: cerita "kapan sistem ini benar-benar berguna bagi user" dan "kapan solusi kami lebih baik dari yang sudah ada" untuk juri kompetisi -- bukan cuma angka IR akademis.
+
+| Metrik | Definisi Singkat | Kenapa Penting untuk Juri |
+|---|---|---|
+| **Success@3, Success@5** | 1 kalau MINIMAL SATU hasil relevan ada di Top-K, 0 kalau tidak. Rata-rata = % query yang "berhasil". | User tidak peduli ranking sempurna -- yang penting dapat 1 hasil yang cocok. Ini metrik paling dekat dengan pengalaman user sungguhan. |
+| **Coverage** | % query yang dapat MINIMAL SATU hasil (relevan atau tidak) dari sistem. | Sistem yang mengembalikan 0 hasil sama sekali langsung bikin user frustrasi -- ini beda dari Success@K yang mengukur RELEVANSI, Coverage mengukur KEHADIRAN hasil. |
+| **MAP (Mean Average Precision)** | Rata-rata Average Precision (AP) di seluruh query; AP = rata-rata Precision@k di posisi-posisi k tempat dokumen relevan muncul, dibagi total dokumen relevan. | Standar industri Information Retrieval, lebih holistik daripada Precision@K tunggal karena memperhitungkan SELURUH posisi relevan, bukan cuma potongan Top-K. |
+| **P95 Latency (ms)** | Nilai latensi di persentil ke-95 (bisa diubah lewat `EVAL_PERCENTILE_LATENCY` di `.env`) dari seluruh pengukuran per query. | Rata-rata bisa menipu -- kalau 95% request cepat tapi 5% lambat, rata-rata tetap kelihatan bagus padahal user tetap merasakan yang lambat. P95 = "worst case yang biasa dirasakan user". |
+| **Diversity@3** | Rata-rata jumlah KATEGORI BERBEDA di Top-3 hasil per query (1 kalau semua sama kategori, sampai 3 kalau semua beda). | Kalau Top-3 semua "kain perca batik", user lain dengan kebutuhan berbeda tidak kebantu. Diversity mengukur keberagaman hasil, bukan cuma relevansi. |
+
+Metrik lama (Precision/Recall/nDCG/MRR/Latensi rata-rata) TIDAK diubah sama sekali -- semua metrik baru ditambahkan sebagai baris/kolom baru, disisipkan setelah metrik lama di `results.md`, `results.csv`, dan `results_detailed.csv`.
+
+---
+
+## 7. Asumsi Tambahan (Revisi Metrik)
+
+Keputusan yang tidak eksplisit di spesifikasi revisi, ditandai `# ASUMSI:` langsung di kode. Ringkasannya:
+
+1. **`EVAL_PERCENTILE_LATENCY` ditambahkan sebagai variabel BARU** di `.env.example` dan `config.py` (bukan mengubah baris yang sudah ada) -- ini untuk merekonsiliasi dua instruksi yang saling bertentangan di spesifikasi revisi ("jangan ubah format `.env`/`config.py`" vs "P95 harus bisa diubah lewat `.env` dengan nama `EVAL_PERCENTILE_LATENCY`"). Dibaca sebagai "jangan ubah variabel yang SUDAH ADA", bukan "jangan tambah variabel baru", karena pembacaan literal lain akan membuat permintaan itu mustahil dipenuhi.
+2. **Nilai K untuk Success@K (3, 5) dan Diversity@3 (3) di-hardcode**, TIDAK mengikuti `EVAL_K_VALUES` yang bisa diubah pengguna -- sesuai permintaan literal spesifikasi ("Success@K (K=3, K=5)", "Diversity@3" sebagai nama metrik tetap).
+3. **Success@K TIDAK dikecualikan untuk query tanpa ground truth** (berbeda dari Recall/MRR/nDCG/MAP) -- karena secara matematis Success@K tetap terdefinisi (=0.0) tanpa ground truth (bukan pembagian dengan nol), jadi tidak ada alasan matematis untuk mengecualikannya. Coverage dan Diversity@3 juga tidak butuh ground truth sama sekali, jadi otomatis dihitung untuk semua query (sesuai instruksi eksplisit untuk Coverage).
+4. **Kategori untuk Diversity@3 diturunkan dari kata kunci material di title+description** (lihat `CATEGORY_KEYWORDS` & `infer_category()` di `evaluate_matching.py`), BUKAN dari field `category_branch` -- karena `category_branch` bernilai `'RAW_MATERIAL'` untuk SEMUA produk (lihat seed data & migrations.sql), sehingga tidak diskriminatif untuk mengukur diversity. File seed data sendiri TIDAK diubah; logika ini murni di sisi `evaluate_matching.py`.
+5. **`top_n` (kedalaman retrieval) diperluas otomatis** mencakup `SUCCESS_K_VALUES` (3, 5) dan `DIVERSITY_K` (3), bukan cuma `max(EVAL_K_VALUES)` -- supaya tetap valid kalau pengguna mengubah `EVAL_K_VALUES` ke nilai yang lebih kecil dari 5. Ini hanya mengubah NILAI yang dikirim ke `baseline_keyword_search`/`baseline_fulltext_search`, bukan isi fungsi itu sendiri.
+6. **MAP dihitung atas retrieved list yang sudah dibatasi `top_n`** (sama seperti MRR/nDCG yang sudah ada sebelumnya) -- jadi ini sebenarnya "MAP@top_n", bukan MAP atas seluruh katalog produk. Konsisten dengan cara metrik lama sudah bekerja di script ini.
+7. **Kolom `diversity@3` ditambahkan ke `results_detailed.csv`** sebagai bonus di luar 4 kolom yang diminta eksplisit (`success@3`, `success@5`, `coverage`, `average_precision`) -- untuk memudahkan audit manual, tidak menghapus/mengganti kolom yang diminta.
+8. **`test_metrics.py` ditulis dengan `unittest`** (bawaan Python), bukan `pytest`, supaya tidak perlu menambah dependency baru ke `requirements.txt` -- tapi tetap bisa dijalankan dengan `pytest test_metrics.py` juga kalau kamu sudah install pytest (pytest kompatibel menjalankan test bergaya `unittest.TestCase`).
+
+---
+
+## 8. Yang Perlu Kamu Sesuaikan Sebelum Presentasi ke Mentor
+
+- [ ] Isi `DATABASE_URL` di `.env` dengan database cloud sungguhan.
+- [ ] Jalankan ulang evaluasi di **Mode B** (NLP service asli rekan tim) begitu servicenya siap -- angka Mode mock TIDAK boleh dipakai sebagai bukti keunggulan ke juri.
+- [ ] Kalau mau data lebih besar/representatif, tambah listing & query di `seed_products.json` / `seed_queries.json` (atau perluas `_generate_seed_data.py` lalu jalankan ulang) -- ingat update `relevant_listing_ids` secara konsisten.
+- [ ] Review daftar asumsi di atas -- terutama poin 1-3 di bagian 5 yang paling mempengaruhi kualitas Baseline 2, dan poin 4 di bagian 7 (Diversity@3) kalau kamu menambah kategori material baru ke seed data.
+- [ ] Jalankan `python -m unittest test_metrics.py -v` sekali untuk memastikan semua metrik baru masih benar setelah kamu utak-atik kode.

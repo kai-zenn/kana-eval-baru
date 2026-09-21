@@ -1,0 +1,14 @@
+# --- dipakai oleh mock_nlp_service.py ---
+fastapi>=0.110
+uvicorn[standard]>=0.29
+numpy>=1.26
+rank-bm25>=0.2.2
+
+# --- dipakai oleh evaluate_matching.py ---
+psycopg2-binary>=2.9
+requests>=2.31
+
+# Catatan: metrik IR (Precision/Recall/MRR/nDCG) diimplementasikan manual
+# dengan math/statistics bawaan Python (bukan scikit-learn) supaya kasus edge
+# (query tanpa ground truth) bisa ditangani eksplisit -- lihat komentar
+# ASUMSI di evaluate_matching.py. scikit-learn sengaja tidak dipakai di sini.
