@@ -307,9 +307,6 @@ def nlp_pipeline_search(
     candidates_sorted = sorted(candidates, key=lambda c: c["distance_km"])
     candidates_capped = candidates_sorted[:50]
     
-    # PATCH: NLP service maxItems=50 untuk candidates
-    candidates_capped = candidates[:50]
-    
     payload = {
         "request_id": str(uuid.uuid4()),
         "query_text": query["raw_text"],
