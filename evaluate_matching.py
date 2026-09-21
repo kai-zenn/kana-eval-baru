@@ -301,6 +301,11 @@ def nlp_pipeline_search(
     if not candidates:
         return []
     query_embedding = nlp_embed(session, query["raw_text"])
+
+    # FIX: Sort kandidat berdasarkan jarak terdekat (distance_km) sebelum di-cap ke 50.
+    # Memastikan kandidat paling relevan secara geografis tidak terpotong acak.
+    candidates_sorted = sorted(candidates, key=lambda c: c["distance_km"])
+    candidates_capped = candidates_sorted[:50]
     
     # PATCH: NLP service maxItems=50 untuk candidates
     candidates_capped = candidates[:50]
