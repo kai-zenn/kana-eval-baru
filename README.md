@@ -1,48 +1,810 @@
 # KANA - Uji Performa Head-to-Head Matching
 
-Membandingkan 3 pendekatan matching untuk posting **#CariMaterial** di platform KANA:
+Membandingkan **3 pendekatan matching** untuk posting **#CariMaterial** pada platform KANA.
 
-| # | Pendekatan | Teknologi |
-|---|---|---|
-| 1 | Keyword (Baseline) | SQL `ILIKE` sederhana |
-| 2 | BM25 / Full-text (Baseline) | PostgreSQL `to_tsquery` + `ts_rank` |
-| 3 | NLP Pipeline (Solusi kami) | BM25 Stage 2 -> Semantic similarity Stage 3, lewat NLP service |
+| # | Pendekatan                  | Teknologi                                                      |
+| - | --------------------------- | -------------------------------------------------------------- |
+| 1 | Keyword (Baseline)          | SQL `ILIKE` sederhana                                          |
+| 2 | BM25 / Full-text (Baseline) | PostgreSQL `to_tsquery` + `ts_rank`                            |
+| 3 | NLP Pipeline (Solusi)       | BM25 Stage 2 → Semantic Similarity Stage 3 melalui NLP Service |
 
-Dibuat untuk persiapan **Samsung Solve for Tomorrow 2026**, supaya klaim "pipeline NLP kami lebih unggul" punya data empiris di baliknya (atau, kalau ternyata tidak unggul, tetap ada data jujur untuk di-framing apa adanya).
-
----
-
-## 📢 Update Perbaikan Evaluasi (Terbaru)
-
-> **Catatan Pengembang (Bug Fix Evaluasi):**  
-> Telah dilakukan perbaikan bug kritikal pada skrip evaluasi (`evaluate_matching.py`) di fungsi `nlp_pipeline_search()`.
-
-- **Masalah Sebelum Fix:** Fungsi pemotong kandidat (`[:50]`) mengambil daftar produk dari PostgreSQL tanpa pengurutan (`ORDER BY`). Hal ini menyebabkan kandidat produk dengan ID pendek (`p0XX`, baris 51–150 di seed data) selalu terpotong dan tidak pernah dievaluasi oleh NLP service. Efeknya, query `q028`–`q050` secara tidak adil mendapatkan `Precision@3 = 0.0`.
-- **Perbaikan yang Dilakukan:** Kandidat kini diurutkan berdasarkan jarak geografis terdekat (`distance_km`) **sebelum** dipotong menjadi 50 kandidat (`candidates_sorted[:50]`).
-- **Dampak Perbaikan:** Memastikan pembandingan yang adil terhadap baseline BM25, serta mengembalikan skor `Precision@3`, `MRR`, dan `Success@3` milik NLP Pipeline ke performa sesungguhnya.
+Proyek ini dibuat untuk mendukung persiapan **Samsung Solve for Tomorrow 2026**, dengan tujuan menyediakan data empiris untuk membandingkan performa pipeline NLP dengan pendekatan pencarian baseline.
 
 ---
 
-## 1. Struktur Folder
+## 📌 Catatan Perbaikan Evaluasi
 
-kana-eval/├── mock_nlp_service.py     # Replika kontrak API NLP service (FastAPI, port 8001)├── evaluate_matching.py    # Skrip evaluasi utama (jalankan ini)├── config.py               # Konfigurasi terpusat (baca .env, ada komentar TODO)├── .env.example            # Template .env -- salin & isi├── migrations.sql          # DDL: tabel products & material_requests├── seed_products.json      # 150 listing produk (data uji)├── seed_queries.json       # 50 query #CariMaterial + ground truth├── requirements.txt        # Dependency Python├── test_metrics.py         # Unit test untuk metrik tambahan (revisi)├── _generate_seed_data.py  # (bonus, opsional) skrip pembuat seed data di atas└── README.md               # File ini
-`_generate_seed_data.py` BUKAN bagian dari alur evaluasi (tidak dipanggil oleh `evaluate_matching.py`) -- ini hanya disertakan untuk transparansi, kalau kamu ingin melihat bagaimana `relevant_listing_ids` (ground truth) di `seed_queries.json` dihitung, atau ingin membuat ulang/memperluas data dengan seed acak yang sama (`random.seed(42)`, deterministik).
+### Bug Fix pada `evaluate_matching.py`
+
+Telah diperbaiki bug pada fungsi `nlp_pipeline_search()` yang sebelumnya melakukan pemotongan kandidat (`[:50]`) **sebelum proses sorting**.
+
+#### Masalah
+
+Kandidat diambil dari database tanpa `ORDER BY`. Akibatnya, listing dengan ID pendek, khususnya `p0XX` pada baris 51–150 seed data, dapat terpotong secara tidak konsisten.
+
+Hal ini menyebabkan query `q028`–`q050` mendapatkan nilai `Precision@3 = 0.0` secara salah.
+
+#### Perbaikan
+
+Kandidat sekarang:
+
+1. Dihitung jaraknya.
+2. Diurutkan berdasarkan `distance_km`.
+3. Baru dibatasi menjadi maksimal 50 kandidat.
+
+```python
+candidates_sorted[:50]
+```
+
+Dengan demikian, kandidat terdekat tidak lagi terpotong secara acak sebelum masuk ke tahap NLP.
 
 ---
 
-## 2. Cara Menjalankan
+# 📁 Struktur Folder
 
-### Langkah 1 -- Install dependency
+```text
+kana-eval/
+│
+├── mock_nlp_service.py
+│   └── Replika kontrak API NLP Service (FastAPI, port 8001)
+│
+├── evaluate_matching.py
+│   └── Skrip utama untuk menjalankan evaluasi
+│
+├── config.py
+│   └── Konfigurasi terpusat dan pembacaan .env
+│
+├── .env.example
+│   └── Template konfigurasi environment
+│
+├── migrations.sql
+│   └── DDL tabel products dan material_requests
+│
+├── seed_products.json
+│   └── 150 listing produk untuk data pengujian
+│
+├── seed_queries.json
+│   └── 50 query #CariMaterial beserta ground truth
+│
+├── requirements.txt
+│   └── Dependency Python
+│
+├── test_metrics.py
+│   └── Unit test untuk metrik tambahan
+│
+├── _generate_seed_data.py
+│   └── Generator seed data (opsional)
+│
+└── README.md
+    └── Dokumentasi proyek
+```
+
+> `_generate_seed_data.py` bukan bagian dari alur evaluasi utama dan tidak dipanggil oleh `evaluate_matching.py`.
+>
+> File tersebut disediakan untuk transparansi, terutama untuk melihat bagaimana `relevant_listing_ids` pada `seed_queries.json` dibuat atau untuk membuat ulang data menggunakan seed acak yang sama (`random.seed(42)`).
+
+---
+
+# 🚀 Cara Menjalankan
+
+## 1. Install Dependency
+
+Pastikan Python sudah terinstall, kemudian jalankan:
 
 ```bash
 pip install -r requirements.txt
-Langkah 2 -- Isi konfigurasiBashcp .env.example .env
-Lalu buka .env dan isi bagian yang ditandai # TODO: ISI INI:DATABASE_URL -- connection string database cloud kamu (Neon/Supabase/Aiven/dll)NLP_SERVICE_API_KEY -- shared secret bebas kamu tentukan (harus sama antara mock service, eval script, dan nanti backend Go)Default lain (NLP_BASE_URL, NLP_MODE, dst) sudah diarahkan ke mock service lokal dan aman dipakai langsung.Langkah 3 -- Jalankan migrasi databaseBashpsql "$DATABASE_URL" -f migrations.sql
-(Ganti $DATABASE_URL dengan connection string kamu kalau tidak di-export sebagai env var, atau paste langsung connection string-nya.)Langkah 4 -- Jalankan NLP serviceMode A (default, mock -- dipakai kalau NLP service asli rekan tim belum siap):Bashuvicorn mock_nlp_service:app --port 8001
-Mode B (NLP service asli sudah siap): cukup ubah dua baris di .env:Cuplikan kodeNLP_BASE_URL=http://alamat-nlp-service-asli:PORT
+```
+
+---
+
+## 2. Konfigurasi Environment
+
+Salin file `.env.example` menjadi `.env`:
+
+```bash
+cp .env.example .env
+```
+
+> **Windows Command Prompt:** gunakan cara yang sesuai dengan shell yang digunakan, misalnya:
+>
+> ```cmd
+> copy .env.example .env
+> ```
+
+Kemudian buka `.env` dan isi konfigurasi yang ditandai:
+
+```env
+DATABASE_URL=...
+NLP_SERVICE_API_KEY=...
+```
+
+### Variabel utama
+
+| Variable              | Keterangan                                                                  |
+| --------------------- | --------------------------------------------------------------------------- |
+| `DATABASE_URL`        | Connection string database cloud seperti Neon, Supabase, Aiven, dan lainnya |
+| `NLP_SERVICE_API_KEY` | Shared secret antara mock service, evaluation script, dan backend           |
+| `NLP_BASE_URL`        | URL NLP Service                                                             |
+| `NLP_MODE`            | Mode NLP Service (`mock` atau `real`)                                       |
+
+Secara default, konfigurasi diarahkan ke mock NLP service lokal.
+
+---
+
+## 3. Jalankan Migrasi Database
+
+Pastikan `psql` tersedia, kemudian jalankan:
+
+```bash
+psql "$DATABASE_URL" -f migrations.sql
+```
+
+Jika `DATABASE_URL` belum diekspor sebagai environment variable, gunakan connection string database secara langsung.
+
+---
+
+## 4. Jalankan NLP Service
+
+### Mode A - Mock NLP Service
+
+Mode ini digunakan ketika NLP Service asli belum tersedia.
+
+Jalankan:
+
+```bash
+uvicorn mock_nlp_service:app --port 8001
+```
+
+Secara default, service berjalan pada:
+
+```text
+http://localhost:8001
+```
+
+### Mode B - NLP Service Asli
+
+Jika NLP Service asli sudah tersedia, ubah `.env`:
+
+```env
+NLP_BASE_URL=http://alamat-nlp-service-asli:PORT
 NLP_MODE=real
-Tidak ada kode yang perlu diubah -- karena kontrak API mock & asli identik.Langkah 5 -- Jalankan evaluasiBashpython evaluate_matching.py
-Skrip ini otomatis: seed database (idempotent, aman dijalankan berkali-kali) -> ambil kandidat per query (Stage 1 radius filter) -> jalankan ketiga pendekatan -> hitung metrik -> tulis output.Langkah 6 (opsional, disarankan) -- Jalankan unit test metrikBashpython -m unittest test_metrics.py -v
-# atau, kalau kamu sudah pakai pytest:
+```
+
+Tidak perlu mengubah kode evaluasi karena mock service dan NLP service asli menggunakan kontrak API yang sama.
+
+---
+
+## 5. Jalankan Evaluasi
+
+Jalankan:
+
+```bash
+python evaluate_matching.py
+```
+
+Script akan secara otomatis:
+
+1. Melakukan seed database.
+2. Mengambil kandidat berdasarkan radius geografis.
+3. Menjalankan ketiga pendekatan matching.
+4. Menghitung metrik evaluasi.
+5. Menghasilkan file hasil evaluasi.
+
+Proses seed bersifat **idempotent**, sehingga aman dijalankan lebih dari satu kali.
+
+---
+
+## 6. Jalankan Unit Test
+
+Unit test tidak membutuhkan database atau NLP Service.
+
+Dengan `unittest`:
+
+```bash
+python -m unittest test_metrics.py -v
+```
+
+Atau jika menggunakan `pytest`:
+
+```bash
 pytest test_metrics.py -v
-Test ini TIDAK butuh database atau NLP service jalan -- hanya menguji fungsi perhitungan metrik tambahan (Success@K, Coverage, MAP, P95, Diversity@3) dengan input kecil yang hasilnya dihitung manual di komentar tiap test.3. Cara Membaca HasilTiga file dihasilkan:results.md -- tabel ringkasan (format sama seperti draf yang kamu kirim ke mentor), plus catatan otomatis kalau kamu masih di Mode mock.results.csv -- versi CSV dari tabel yang sama, untuk ditempel ke slide/spreadsheet.results_detailed.csv -- satu baris per (query, pendekatan): berguna untuk audit "kenapa NLP Pipeline kalah di query tertentu" saat debugging.Baris Metrik yang tersedia: Precision@3, Recall@3, nDCG@3, Precision@5, Recall@5, nDCG@5, MRR (K bisa diubah lewat EVAL_K_VALUES di .env), lalu metrik tambahan Success@3, Success@5, Coverage, MAP, Diversity@3, dan diakhiri Latensi rata-rata (ms), P95 Latency (ms). Penjelasan tiap metrik tambahan ada di bagian 6.results_detailed.csv juga punya kolom tambahan: success@3, success@5, coverage, average_precision (dipakai untuk MAP), dan diversity@3 (bonus, untuk audit).PENTING soal Mode mock: selama masih pakai mock_nlp_service.py, embedding yang dipakai adalah vektor pseudo-random (bukan model ML sungguhan) -- jadi angka kolom "NLP Pipeline" di Mode ini hanya membuktikan pipeline & kontrak API berjalan dengan benar, bukan membuktikan keunggulan semantik. Pembuktian keunggulan pipeline untuk laporan ke mentor/juri harus dilakukan di Mode B (NLP service asli).4. Skema DatabaseLihat migrations.sql untuk DDL lengkap. Ringkasnya:products -- kolom minimal: id, title, description, category_branch, latitude, longitude, listing_type, status, plus search_vector (auto-terisi lewat trigger, dipakai Baseline 2).material_requests -- id, raw_text, latitude, longitude, relevant_listing_ids, created_at. Kolom relevant_listing_ids (TEXT[]) khusus untuk keperluan evaluasi/ground truth, bukan bagian skema produksi KANA yang sesungguhnya -- kalau kalian sudah punya skema material_requests sendiri, abaikan tabel ini; evaluate_matching.py membaca ground truth langsung dari seed_queries.json, bukan dari kolom ini.Kalau tim KANA sudah punya skema sendiri untuk kedua tabel ini, sesuaikan saja query di evaluate_matching.py (fungsi get_candidates, baseline_keyword_search, baseline_fulltext_search) ke nama kolom kalian.5. Ringkasan Keputusan & Asumsi (# ASUMSI:)Semua keputusan yang tidak eksplisit di spesifikasi asli ditandai # ASUMSI: langsung di kode. Ringkasannya di sini supaya gampang di-review sekali baca:Text search config 'simple', bukan 'indonesian' -- PostgreSQL tidak menyediakan configuration Bahasa Indonesia bawaan. Kalau kalian pasang dictionary custom di server, ganti 'simple' di migrations.sql (trigger) dan evaluate_matching.py (baseline_fulltext_search).Baseline 2 pakai to_tsquery dengan OR antar keyword signifikan, bukan plainto_tsquery mentah -- plainto_tsquery atas kalimat penuh akan meng-AND-kan semua kata (termasuk kata basa-basi), yang membuat baseline ini nyaris tidak pernah match. OR + ts_rank jauh lebih dekat ke ranking berbasis term-frequency ala BM25.Ekstraksi keyword (extract_keywords) sangat sederhana -- lowercase, buang hashtag, buang daftar stopword & kata basa-basi #CariMaterial Bahasa Indonesia yang di-hardcode. Ini disengaja tetap naif karena mewakili "baseline lemah", bukan NLP proper.Stage 1 (spatial filter) disimulasikan di Python dengan Haversine langsung terhadap seluruh baris products, bukan lewat PostGIS/bounding-box index -- cukup untuk skala data uji ini (puluhan-ratusan baris).Pre-sorting candidate sebelum Capping 50 -- nlp_pipeline_search() melakukan sorting berbasis jarak geografis (distance_km) sebelum di-cap ke 50 kandidat teratas untuk dikirim ke NLP service.final_score pada mock /v1/match = semantic_score (mengikuti contoh di kontrak API kamu).Fallback saat tidak ada kandidat yang lolos semantic_threshold di mock service: pool diurutkan berdasarkan bm25_score (sinyal sungguhan), bukan semantic_score (yang di Mode mock murni noise acak) -- supaya mock tetap berguna untuk sanity-check pipeline walau model semantik belum ada.Query dengan relevant_listing_ids kosong dikecualikan dari rata-rata Recall/MRR/nDCG (bukan dihitung sebagai 0), karena metrik itu tidak terdefinisi secara matematis tanpa ground truth. Precision@K tetap dihitung penuh (0 kalau tidak ada hit).material_requests.id bertipe TEXT, bukan UUID -- supaya bisa memakai id ringkas seperti q001 dari seed_queries.json yang gampang dibaca di tabel hasil.6. Metrik EvaluasiRevisi ini menambahkan 5 metrik baru di evaluate_matching.py, di luar metrik akademis standar (Precision/Recall/nDCG/MRR) yang sudah ada. Tujuannya: cerita "kapan sistem ini benar-benar berguna bagi user" dan "kapan solusi kami lebih baik dari yang sudah ada" untuk juri kompetisi -- bukan cuma angka IR akademis.MetrikDefinisi SingkatKenapa Penting untuk JuriSuccess@3, Success@51 kalau MINIMAL SATU hasil relevan ada di Top-K, 0 kalau tidak. Rata-rata = % query yang "berhasil".User tidak peduli ranking sempurna -- yang penting dapat 1 hasil yang cocok. Ini metrik paling dekat dengan pengalaman user sungguhan.Coverage% query yang dapat MINIMAL SATU hasil (relevan atau tidak) dari sistem.Sistem yang mengembalikan 0 hasil sama sekali langsung bikin user frustrasi -- ini beda dari Success@K yang mengukur RELEVANSI, Coverage mengukur KEHADIRAN hasil.MAP (Mean Average Precision)Rata-rata Average Precision (AP) di seluruh query; AP = rata-rata Precision@k di posisi-posisi k tempat dokumen relevan muncul, dibagi total dokumen relevan.Standar industri Information Retrieval, lebih holistik daripada Precision@K tunggal karena memperhitungkan SELURUH posisi relevan, bukan cuma potongan Top-K.P95 Latency (ms)Nilai latensi di persentil ke-95 (bisa diubah lewat EVAL_PERCENTILE_LATENCY di .env) dari seluruh pengukuran per query.Rata-rata bisa menipu -- kalau 95% request cepat tapi 5% lambat, rata-rata tetap kelihatan bagus padahal user tetap merasakan yang lambat. P95 = "worst case yang biasa dirasakan user".Diversity@3Rata-rata jumlah KATEGORI BERBEDA di Top-3 hasil per query (1 kalau semua sama kategori, sampai 3 kalau semua beda).Kalau Top-3 semua "kain perca batik", user lain dengan kebutuhan berbeda tidak kebantu. Diversity mengukur keberagaman hasil, bukan cuma relevansi.Metrik lama (Precision/Recall/nDCG/MRR/Latensi rata-rata) TIDAK diubah sama sekali -- semua metrik baru ditambahkan sebagai baris/kolom baru, disisipkan setelah metrik lama di results.md, results.csv, dan results_detailed.csv.7. Yang Perlu Kamu Sesuaikan Sebelum Presentasi ke Mentor[ ] Isi DATABASE_URL di .env dengan database cloud sungguhan.[ ] Jalankan ulang evaluasi di Mode B (NLP service asli rekan tim) begitu servicenya siap -- angka Mode mock TIDAK boleh dipakai sebagai bukti keunggulan ke juri.[ ] Pastikan metrik NLP Pipeline mencapai target minimal (Precision@3 ≥ 0.4867, MRR ≥ 0.6944, Success@3 ≥ 0.8000).[ ] Review daftar asumsi di atas -- terutama poin 1-3 di bagian 5 yang paling mempengaruhi kualitas Baseline 2.[ ] Jalankan python -m unittest test_metrics.py -v sekali untuk memastikan semua metrik baru masih benar.
+```
+
+Test mencakup:
+
+* Success@K
+* Coverage
+* MAP
+* P95 Latency
+* Diversity@3
+
+---
+
+# 📊 Output Evaluasi
+
+Setelah evaluasi selesai, sistem menghasilkan tiga file utama:
+
+| File                   | Keterangan                                     |
+| ---------------------- | ---------------------------------------------- |
+| `results.md`           | Ringkasan hasil evaluasi dalam format Markdown |
+| `results.csv`          | Hasil evaluasi dalam format CSV                |
+| `results_detailed.csv` | Detail hasil per query dan pendekatan          |
+
+### `results.md`
+
+Berisi tabel ringkasan yang dapat digunakan untuk dokumentasi atau presentasi.
+
+### `results.csv`
+
+Berguna untuk:
+
+* Spreadsheet
+* Analisis lanjutan
+* Visualisasi
+* Presentasi
+
+### `results_detailed.csv`
+
+Berisi satu baris untuk setiap kombinasi:
+
+```text
+query × pendekatan
+```
+
+File ini dapat digunakan untuk melakukan audit ketika suatu pendekatan mendapatkan hasil yang buruk pada query tertentu.
+
+---
+
+# 📈 Metrik Evaluasi
+
+Metrik yang digunakan:
+
+* Precision@3
+* Recall@3
+* nDCG@3
+* Precision@5
+* Recall@5
+* nDCG@5
+* MRR
+* Success@3
+* Success@5
+* Coverage
+* MAP
+* Diversity@3
+* Average Latency
+* P95 Latency
+
+Nilai `K` untuk metrik standar dapat dikonfigurasi melalui:
+
+```env
+EVAL_K_VALUES
+```
+
+---
+
+## Metrik Tambahan
+
+### Success@3 dan Success@5
+
+Mengukur apakah minimal satu hasil relevan muncul di Top-K.
+
+```text
+1 = terdapat minimal satu hasil relevan
+0 = tidak terdapat hasil relevan
+```
+
+Metrik ini menggambarkan apakah pengguna mendapatkan setidaknya satu hasil yang sesuai dalam beberapa hasil pertama.
+
+---
+
+### Coverage
+
+Mengukur persentase query yang menghasilkan minimal satu hasil.
+
+Coverage berbeda dengan Success@K:
+
+* **Coverage** → apakah sistem menghasilkan hasil?
+* **Success@K** → apakah hasil relevan muncul di Top-K?
+
+---
+
+### MAP
+
+**Mean Average Precision (MAP)** merupakan rata-rata Average Precision dari seluruh query.
+
+MAP mempertimbangkan posisi dokumen relevan dalam hasil retrieval, sehingga memberikan gambaran yang lebih menyeluruh dibandingkan Precision@K saja.
+
+---
+
+### P95 Latency
+
+P95 adalah nilai latensi pada persentil ke-95.
+
+Artinya, sekitar 95% pengukuran berada pada atau di bawah nilai tersebut.
+
+Konfigurasinya dapat diubah melalui:
+
+```env
+EVAL_PERCENTILE_LATENCY
+```
+
+P95 digunakan karena rata-rata latency dapat menyembunyikan sebagian request yang jauh lebih lambat.
+
+---
+
+### Diversity@3
+
+Mengukur jumlah kategori material yang berbeda pada tiga hasil teratas.
+
+Nilainya berada pada rentang:
+
+```text
+1 → semua hasil berasal dari kategori yang sama
+3 → ketiga hasil memiliki kategori berbeda
+```
+
+Kategori ditentukan berdasarkan keyword material pada `title` dan `description`.
+
+---
+
+# 🗄️ Skema Database
+
+Struktur database utama terdapat pada:
+
+```text
+migrations.sql
+```
+
+## `products`
+
+Kolom minimal:
+
+```text
+id
+title
+description
+category_branch
+latitude
+longitude
+listing_type
+status
+search_vector
+```
+
+`search_vector` digunakan oleh baseline PostgreSQL Full-text Search dan diisi secara otomatis melalui trigger.
+
+---
+
+## `material_requests`
+
+Kolom:
+
+```text
+id
+raw_text
+latitude
+longitude
+relevant_listing_ids
+created_at
+```
+
+`relevant_listing_ids` digunakan khusus untuk kebutuhan evaluasi dan ground truth.
+
+Kolom tersebut bukan bagian dari skema produksi KANA yang sesungguhnya.
+
+Jika project KANA sudah memiliki skema `material_requests` sendiri, tabel evaluasi ini dapat disesuaikan.
+
+Ground truth pada proses evaluasi dibaca langsung dari:
+
+```text
+seed_queries.json
+```
+
+---
+
+# ⚙️ Ringkasan Pendekatan Matching
+
+## 1. Keyword Baseline
+
+Menggunakan pencarian sederhana dengan PostgreSQL:
+
+```sql
+ILIKE
+```
+
+Pendekatan ini berfungsi sebagai baseline sederhana berbasis pencocokan kata.
+
+---
+
+## 2. BM25 / Full-text Baseline
+
+Menggunakan PostgreSQL:
+
+```text
+to_tsquery
+ts_rank
+```
+
+Konfigurasi text search menggunakan:
+
+```text
+simple
+```
+
+Baseline menggunakan OR antar keyword signifikan untuk menghasilkan ranking berbasis term matching.
+
+---
+
+## 3. NLP Pipeline
+
+Pipeline utama menggunakan dua tahap:
+
+```text
+Stage 1
+Spatial Filtering
+       ↓
+Stage 2
+BM25 Candidate Ranking
+       ↓
+Stage 3
+Semantic Similarity
+       ↓
+Final Ranking
+```
+
+Stage 1 melakukan filtering berdasarkan jarak geografis.
+
+Stage 2 melakukan retrieval kandidat menggunakan BM25.
+
+Stage 3 melakukan semantic similarity melalui NLP Service.
+
+---
+
+# 🧠 Asumsi dan Keputusan Teknis
+
+## 1. PostgreSQL Text Search
+
+Digunakan konfigurasi:
+
+```text
+simple
+```
+
+bukan:
+
+```text
+indonesian
+```
+
+PostgreSQL tidak menyediakan konfigurasi Bahasa Indonesia bawaan.
+
+Jika server memiliki dictionary Bahasa Indonesia custom, konfigurasi dapat disesuaikan.
+
+---
+
+## 2. Query Full-text
+
+Baseline menggunakan:
+
+```text
+to_tsquery
+```
+
+dengan OR antar keyword signifikan.
+
+Hal ini dipilih karena `plainto_tsquery` terhadap kalimat penuh dapat menghasilkan pencarian yang terlalu ketat akibat seluruh kata dianggap sebagai bagian dari query.
+
+---
+
+## 3. Keyword Extraction
+
+Ekstraksi keyword dibuat sederhana:
+
+* lowercase
+* menghapus hashtag
+* menghapus stopword
+* menghapus kata basa-basi umum #CariMaterial
+
+Pendekatan ini memang dibuat sebagai **baseline sederhana**, bukan sebagai NLP pipeline penuh.
+
+---
+
+## 4. Spatial Filtering
+
+Stage 1 disimulasikan menggunakan perhitungan **Haversine** di Python terhadap data `products`.
+
+Belum menggunakan:
+
+* PostGIS
+* Bounding-box index
+
+Pendekatan ini cukup untuk ukuran dataset pengujian yang relatif kecil.
+
+---
+
+## 5. Candidate Sorting
+
+Sebelum kandidat dibatasi menjadi 50:
+
+```python
+candidates_sorted[:50]
+```
+
+kandidat diurutkan berdasarkan:
+
+```text
+distance_km
+```
+
+Hal ini mencegah kandidat yang relevan terpotong secara acak akibat database tidak memberikan urutan default.
+
+---
+
+## 6. Mock Semantic Score
+
+Pada mock NLP service:
+
+```text
+final_score = semantic_score
+```
+
+Embedding yang digunakan merupakan vektor pseudo-random dan bukan model machine learning sebenarnya.
+
+---
+
+## 7. Fallback Semantic Threshold
+
+Jika tidak ada kandidat yang melewati `semantic_threshold`, fallback menggunakan:
+
+```text
+bm25_score
+```
+
+sebagai sinyal ranking.
+
+Hal ini dilakukan agar mock service tetap berguna untuk melakukan sanity check terhadap pipeline.
+
+---
+
+## 8. Query Tanpa Ground Truth
+
+Query yang memiliki:
+
+```text
+relevant_listing_ids = []
+```
+
+tidak digunakan dalam perhitungan:
+
+* Recall
+* MRR
+* nDCG
+* MAP
+
+karena metrik tersebut tidak terdefinisi tanpa ground truth.
+
+Namun:
+
+* Precision@K
+* Success@K
+* Coverage
+* Diversity@3
+
+tetap dapat dihitung sesuai definisinya.
+
+---
+
+## 9. ID Material Request
+
+`material_requests.id` menggunakan:
+
+```text
+TEXT
+```
+
+bukan UUID.
+
+Hal ini memungkinkan penggunaan ID sederhana seperti:
+
+```text
+q001
+q002
+q003
+```
+
+sehingga hasil evaluasi lebih mudah dibaca.
+
+---
+
+# 🔬 Asumsi Tambahan untuk Metrik
+
+### `EVAL_PERCENTILE_LATENCY`
+
+Variabel:
+
+```env
+EVAL_PERCENTILE_LATENCY
+```
+
+ditambahkan sebagai konfigurasi baru untuk menentukan percentile latency.
+
+---
+
+### Success@K
+
+Nilai K yang digunakan:
+
+```text
+3
+5
+```
+
+dan tidak mengikuti `EVAL_K_VALUES`.
+
+---
+
+### Diversity@3
+
+Diversity selalu dihitung pada:
+
+```text
+Top-3
+```
+
+---
+
+### Diversity Category
+
+Kategori diturunkan dari keyword pada:
+
+```text
+title + description
+```
+
+bukan `category_branch`.
+
+Hal ini karena `category_branch` pada seed data bernilai:
+
+```text
+RAW_MATERIAL
+```
+
+untuk seluruh produk sehingga tidak cukup diskriminatif untuk mengukur diversity.
+
+---
+
+### Retrieval Depth
+
+`top_n` secara otomatis mencakup kebutuhan:
+
+```text
+SUCCESS_K_VALUES
+DIVERSITY_K
+EVAL_K_VALUES
+```
+
+Hal ini memastikan metrik tetap valid meskipun nilai `EVAL_K_VALUES` diubah menjadi lebih kecil dari 5.
+
+---
+
+### MAP
+
+MAP dihitung berdasarkan retrieved list yang sudah dibatasi oleh:
+
+```text
+top_n
+```
+
+Sehingga secara teknis pengukuran ini dapat dipahami sebagai MAP pada kedalaman retrieval yang digunakan.
+
+---
+
+# ⚠️ Catatan Penting: Mock vs NLP Service Asli
+
+**Jangan menggunakan angka dari Mode Mock sebagai bukti bahwa NLP Pipeline lebih unggul.**
+
+Mock service menggunakan embedding pseudo-random:
+
+```text
+Pseudo-random embedding
+        ≠
+Real semantic model
+```
+
+Mode Mock hanya digunakan untuk memastikan:
+
+* Pipeline berjalan.
+* Kontrak API berjalan.
+* Integrasi antar komponen berjalan.
+* Perhitungan metrik berjalan.
+* Evaluasi dapat direproduksi.
+
+Untuk mendapatkan hasil yang dapat digunakan sebagai bukti performa NLP Pipeline, evaluasi harus dilakukan menggunakan:
+
+```text
+NLP_MODE=real
+```
+
+dengan NLP Service asli.
+
+---
+
+# 🎯 Checklist Sebelum Presentasi
+
+Sebelum menggunakan hasil evaluasi untuk presentasi kepada mentor atau juri:
+
+* [ ] Isi `DATABASE_URL` dengan database cloud yang sebenarnya.
+* [ ] Pastikan NLP Service asli sudah tersedia.
+* [ ] Jalankan evaluasi menggunakan **Mode B / NLP Service asli**.
+* [ ] Jangan menggunakan angka dari Mock Mode sebagai bukti keunggulan semantic matching.
+* [ ] Pastikan hasil evaluasi memenuhi target yang telah ditentukan.
+* [ ] Jika membutuhkan dataset yang lebih representatif, tambahkan listing dan query.
+* [ ] Pastikan `relevant_listing_ids` tetap konsisten dengan ground truth.
+* [ ] Review seluruh asumsi teknis sebelum presentasi.
+* [ ] Jalankan seluruh unit test sebelum finalisasi.
+
+Target evaluasi yang digunakan saat ini:
+
+```text
+Precision@3 ≥ 0.4867
+MRR         ≥ 0.6944
+Success@3   ≥ 0.8000
+```
+
+---
+
+# 🧪 Reproducibility
+
+Seed data menggunakan:
+
+```python
+random.seed(42)
+```
+
+sehingga data yang dihasilkan dapat direproduksi selama input dan proses generator tidak diubah.
+
+Untuk membuat ulang seed data, gunakan:
+
+```bash
+python _generate_seed_data.py
+```
+
+> Jalankan generator dengan hati-hati jika seed data yang sedang digunakan sudah menjadi bagian dari hasil evaluasi yang ingin dipertahankan.
+
+---
+
+# 📌 Ringkasan Pipeline
+
+Secara sederhana, sistem evaluasi membandingkan:
+
+```text
+                    #CariMaterial Query
+                            │
+                            ▼
+                  ┌───────────────────┐
+                  │ Spatial Filtering │
+                  │     Stage 1       │
+                  └─────────┬─────────┘
+                            │
+             ┌──────────────┼──────────────┐
+             │              │              │
+             ▼              ▼              ▼
+       Keyword          Full-text      NLP Pipeline
+       Baseline          Baseline           │
+             │              │               ▼
+             │              │          BM25 Stage 2
+             │              │               │
+             │              │               ▼
+             │              │       Semantic Stage 3
+             │              │               │
+             └──────────────┴───────────────┘
+                            │
+                            ▼
+                    Evaluation Metrics
+                            │
+                            ▼
+               results.md / results.csv
+                     / detailed.csv
+```
+
+Tujuan akhirnya bukan sekadar menghasilkan satu angka, tetapi menyediakan evaluasi yang dapat digunakan untuk memahami **bagaimana setiap pendekatan bekerja, kapan gagal, dan bagaimana performanya dibandingkan pada dataset yang sama**.
